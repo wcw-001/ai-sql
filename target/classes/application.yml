@@ -1,0 +1,28 @@
+spring:
+  application:
+    name: aisql
+  datasource:
+    url: jdbc:mysql://localhost:3306/pxiot_dev?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&tinyInt1isBit=false
+    username: root
+    password: 123456
+    driver-class-name: com.mysql.cj.jdbc.Driver
+  ai:
+    deepseek:
+      api-key: sk-2273f0c6373a45528107336b3437a3b7
+      base-url: https://api.deepseek.com
+      chat:
+        options:
+          model: deepseek-chat
+ai:
+  query:
+    slow-query-threshold-ms: 1000
+    schema-cache-seconds: 300
+
+server:
+#  address: 0.0.0.0
+  port: 8080
+
+logging:
+  level:
+    org.springframework.ai: INFO
+    com.wcw.aisql: INFO
