@@ -26,18 +26,36 @@ public class NaturalLanguageQueryService {
     private static final String SQL_PROMPT = """
             你是一个专业的 SQL 开发专家，请基于以下数据库结构生成准确、高效的 MySQL 查询语句。
 
-            规则：
-            1. 只返回 SQL 语句，不包含任何解释性文字。
-            2. 使用标准 MySQL 8.0 语法。
-            3. 明确指定查询字段，避免使用 SELECT *。
-            4. 字符串条件使用单引号，并正确处理特殊字符。
-            5. 合理使用 JOIN，避免不必要的子查询。
-            6. 包含必要的 WHERE 条件，避免全表扫描。
+            【重要规则】
+            1. 只返回 SQL 语句，不包含任何解释性文字
+            2. 使用标准 MySQL 8.0 语法
+            3. 明确指定查询字段，避免使用 SELECT *
+            4. 字符串条件使用单引号，并正确处理特殊字符
+            5. 合理使用 JOIN，避免不必要的子查询
+            6. 包含必要的 WHERE 条件，避免全表扫描
+            
+            【关键约束 - 必须严格遵守】
+            7. 生成的查询字段必须完全匹配数据库中存在的字段名
+            8. 表别名必须与实际表名对应，不能随意创造别名
+            9. JOIN 条件中的字段必须真实存在于相应表中
+            10. 不要臆造不存在的字段名（如 menu_id、user_name 等）
+            11. 如果不确定字段是否存在，请参考下面提供的数据库结构
+            
+            【错误示例 - 绝对避免】
+            ❌ SELECT m.menu_id FROM users u  -- users表中没有menu_id字段
+            ❌ SELECT u.nonexistent_field FROM users u  -- 字段不存在
+            ❌ SELECT * FROM users u WHERE u.menu_id = 1  -- menu_id字段不存在
+            
+            【正确示例】
+            ✅ SELECT u.id, u.name FROM users u WHERE u.status = 'active'
+            ✅ SELECT o.order_id, o.amount FROM orders o JOIN users u ON o.user_id = u.id
 
             数据库结构：
             {schema}
 
             用户需求：{query}
+            
+            请严格按照以上规则生成SQL，确保每个字段都真实存在于对应的表中！
             """;
 
     private final ChatClient.Builder chatClientBuilder;
@@ -110,13 +128,13 @@ public class NaturalLanguageQueryService {
             suggestions.add("改为显式选择必要字段，降低查询成本。");
         }
 
-        if (!lowerSql.contains(" where ")) {
+        if (!lowerSql.contains("where")) {
             score -= 20;
             risks.add("缺少 WHERE 条件，存在全表扫描风险。");
             suggestions.add("补充过滤条件并优先使用索引字段。");
         }
 
-        if (!lowerSql.contains(" limit ")) {
+        if (!lowerSql.contains("limit")) {
             score -= 10;
             risks.add("缺少 LIMIT，结果集可能过大。");
             suggestions.add("添加 LIMIT 或分页条件，避免单次返回过多数据。");
@@ -135,7 +153,7 @@ public class NaturalLanguageQueryService {
             suggestions.add("若只需要前 N 条数据，建议 ORDER BY + LIMIT 组合。");
         }
 
-        if (lowerSql.contains(" not in ")) {
+        if (lowerSql.contains("not in")) {
             score -= 8;
             risks.add("NOT IN 在大数据量下可能性能较差。");
             suggestions.add("可评估改写为 NOT EXISTS 或 LEFT JOIN + IS NULL。");
