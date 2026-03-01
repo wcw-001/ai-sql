@@ -295,8 +295,8 @@
         <pre id="sqlView">-</pre>
       </article>
       <article class="card">
-        <h2 class="title">Parameters</h2>
-        <pre id="paramsView">[]</pre>
+        <h2 class="title">SQL Score Analysis</h2>
+        <pre id="analysisView">{}</pre>
       </article>
     </section>
 
@@ -314,7 +314,7 @@
     const demoBtn = document.getElementById("demoBtn");
     const statusEl = document.getElementById("status");
     const sqlView = document.getElementById("sqlView");
-    const paramsView = document.getElementById("paramsView");
+    const analysisView = document.getElementById("analysisView");
     const tableWrap = document.getElementById("tableWrap");
 
     function setStatus(text, kind = "") {
@@ -369,7 +369,7 @@
 
         if (json.code !== 0 || !json.data) {
           sqlView.textContent = "-";
-          paramsView.textContent = "[]";
+          analysisView.textContent = "{}";
           renderTable([]);
           setStatus(`执行失败: ${json.message || "未知错误"}`, "error");
           return;
@@ -377,13 +377,19 @@
 
         const result = json.data;
         sqlView.textContent = result.sql || "-";
-        paramsView.textContent = JSON.stringify(result.parameters || [], null, 2);
+        analysisView.textContent = JSON.stringify(result.sqlAnalysis || {}, null, 2);
         renderTable(result.data || []);
         const size = Array.isArray(result.data) ? result.data.length : 0;
-        setStatus(`查询成功: 返回 ${size} 行`, "ok");
+        const score = result.sqlAnalysis && typeof result.sqlAnalysis.score === "number" ? result.sqlAnalysis.score : null;
+        const level = result.sqlAnalysis && result.sqlAnalysis.level ? result.sqlAnalysis.level : null;
+        if (score !== null && level) {
+          setStatus(`查询成功: 返回 ${size} 行，SQL评分 ${score} (${level})`, "ok");
+        } else {
+          setStatus(`查询成功: 返回 ${size} 行`, "ok");
+        }
       } catch (err) {
         sqlView.textContent = "-";
-        paramsView.textContent = "[]";
+        analysisView.textContent = "{}";
         renderTable([]);
         setStatus(`请求异常: ${err.message}`, "error");
       } finally {

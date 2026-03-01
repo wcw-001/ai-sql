@@ -1,6 +1,9 @@
 package com.wcw.aisql.query.security;
 
+import com.wcw.aisql.query.common.ErrorCode;
+import com.wcw.aisql.query.exceotion.BusinessException;
 import org.springframework.stereotype.Component;
+import org.springframework.validation.BindException;
 
 import java.util.Locale;
 import java.util.Set;
@@ -17,22 +20,22 @@ public class SqlSecurityValidator {
 
     public void validate(String sql) {
         if (sql == null || sql.isBlank()) {
-            throw new IllegalArgumentException("AI did not generate valid SQL");
+            throw new BusinessException(ErrorCode.API_ERROR,"没有生成有效的sql！");
         }
 
         String normalized = sql.trim().toLowerCase(Locale.ROOT);
         if (!normalized.startsWith("select")) {
-            throw new IllegalArgumentException("Only SELECT queries are allowed");
+            throw new BusinessException(ErrorCode.API_ERROR,"仅仅支持查询！");
         }
 
         for (String keyword : FORBIDDEN_KEYWORDS) {
             if (normalized.matches(".*\\b" + keyword + "\\b.*")) {
-                throw new IllegalArgumentException("SQL contains forbidden keyword: " + keyword);
+                throw new BusinessException(ErrorCode.API_ERROR,"SQL内容有违规词的: " + keyword);
             }
         }
 
         if (MULTI_STATEMENT_PATTERN.matcher(normalized).find()) {
-            throw new IllegalArgumentException("Multiple SQL statements are not allowed");
+            throw new BusinessException(ErrorCode.API_ERROR,"不允许使用 Multi-Statement 功能来连续执行多个 SQL 语句！");
         }
     }
 }
