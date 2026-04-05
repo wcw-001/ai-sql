@@ -2,13 +2,13 @@ spring:
   application:
     name: aisql
   datasource:
-    url: jdbc:mysql://rm-wz9gd5cb4kvx431y0to.mysql.rds.aliyuncs.com:3306/jxz-purchaser?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&tinyInt1isBit=false
-    username: bg_jxz
+    url: xxx
+    username: xxx
     password: BGJXZ!@#123qwe
     driver-class-name: com.mysql.cj.jdbc.Driver
   ai:
     deepseek:
-      api-key: sk-50484b2845b846eba30fdf3124cb1880
+      api-key: xxx
       base-url: https://api.deepseek.com
       chat:
         options:
