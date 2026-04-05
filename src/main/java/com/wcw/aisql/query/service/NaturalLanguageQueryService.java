@@ -1,9 +1,12 @@
 package com.wcw.aisql.query.service;
 
+import com.wcw.aisql.query.config.AiQueryProperties;
+import com.wcw.aisql.query.model.PageInfo;
 import com.wcw.aisql.query.model.QueryResult;
 import com.wcw.aisql.query.model.SqlAnalysis;
+import com.wcw.aisql.query.model.TableMetadata;
+import com.wcw.aisql.query.security.SqlSchemaValidator;
 import com.wcw.aisql.query.security.SqlSecurityValidator;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -13,75 +16,115 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class NaturalLanguageQueryService {
 
+    private static final int MAX_PAGE_SIZE = 200;
     private static final Pattern JOIN_PATTERN = Pattern.compile("\\bjoin\\b", Pattern.CASE_INSENSITIVE);
+    private static final Pattern CODE_BLOCK_PATTERN = Pattern.compile("(?is)```(?:sql)?\\s*(.*?)\\s*```");
+    private static final Pattern TRAILING_LIMIT_PATTERN = Pattern.compile(
+            "(?is)\\s+limit\\s+(?:\\d+\\s*,\\s*\\d+|\\d+\\s+offset\\s+\\d+|\\d+)\\s*$"
+    );
 
     private static final String SQL_PROMPT = """
-            你是一个专业的 SQL 开发专家，请基于以下数据库结构生成准确、高效的 MySQL 查询语句。
+            You are a senior MySQL 8.0 expert.
+            Generate exactly one executable SELECT statement for the user's request.
 
-            【重要规则】
-            1. 只返回 SQL 语句，不包含任何解释性文字
-            2. 使用标准 MySQL 8.0 语法
-            3. 明确指定查询字段，避免使用 SELECT *
-            4. 字符串条件使用单引号，并正确处理特殊字符
-            5. 合理使用 JOIN，避免不必要的子查询
-            6. 包含必要的 WHERE 条件，避免全表扫描
-            
-            【关键约束 - 必须严格遵守】
-            7. 生成的查询字段必须完全匹配数据库中存在的字段名
-            8. 表别名必须与实际表名对应，不能随意创造别名
-            9. JOIN 条件中的字段必须真实存在于相应表中
-            10. 不要臆造不存在的字段名（如 menu_id、user_name 等）
-            11. 如果不确定字段是否存在，请参考下面提供的数据库结构
-            
-            【错误示例 - 绝对避免】
-            ❌ SELECT m.menu_id FROM users u  -- users表中没有menu_id字段
-            ❌ SELECT u.nonexistent_field FROM users u  -- 字段不存在
-            ❌ SELECT * FROM users u WHERE u.menu_id = 1  -- menu_id字段不存在
-            
-            【正确示例】
-            ✅ SELECT u.id, u.name FROM users u WHERE u.status = 'active'
-            ✅ SELECT o.order_id, o.amount FROM orders o JOIN users u ON o.user_id = u.id
+            Rules:
+            1. Return SQL only. No markdown, no explanation, no comments.
+            2. Use only tables, columns, and relations that appear in the schema below.
+            3. Never invent table names, column names, aliases, or join conditions.
+            4. Use explicit column lists instead of SELECT *.
+            5. If multiple tables are needed, every JOIN condition must reference real columns from both sides.
+            6. Add necessary filtering conditions when the request clearly implies them.
+            7. Do not add LIMIT or OFFSET. Pagination is appended by the service.
+            8. Prefer the simplest correct query. If a field is uncertain, do not use it.
 
-            数据库结构：
+            Database schema:
             {schema}
 
-            用户需求：{query}
-            
-            请严格按照以上规则生成SQL，确保每个字段都真实存在于对应的表中！
+            User request:
+            {query}
             """;
 
-    private final ChatClient.Builder chatClientBuilder;
+    private static final String SQL_REPAIR_PROMPT = """
+            The previous SQL is invalid and must be corrected.
+
+            Rules:
+            1. Return SQL only. No markdown, no explanation, no comments.
+            2. Keep the SQL as simple as possible while satisfying the request.
+            3. Use only tables, columns, and relations from the schema.
+            4. Do not use LIMIT or OFFSET.
+            5. Fix every issue described in the failure reason.
+
+            Database schema:
+            {schema}
+
+            User request:
+            {query}
+
+            Previous SQL:
+            {sql}
+
+            Failure reason:
+            {reason}
+            """;
+
+    private final ChatClient chatClient;
     private final JdbcTemplate jdbcTemplate;
     private final SqlSecurityValidator sqlSecurityValidator;
+    private final SqlSchemaValidator sqlSchemaValidator;
+    private final AiQueryProperties properties;
     private final DatabaseSchemaService databaseSchemaService;
     private final DataPermissionService dataPermissionService;
     private final QueryAuditService queryAuditService;
+    private final ConcurrentMap<String, QueryPlanCacheEntry> queryPlanCache = new ConcurrentHashMap<>();
 
-    public QueryResult execute(String userQuery) {
+    public NaturalLanguageQueryService(ChatClient.Builder chatClientBuilder,
+                                       JdbcTemplate jdbcTemplate,
+                                       SqlSecurityValidator sqlSecurityValidator,
+                                       SqlSchemaValidator sqlSchemaValidator,
+                                       AiQueryProperties properties,
+                                       DatabaseSchemaService databaseSchemaService,
+                                       DataPermissionService dataPermissionService,
+                                       QueryAuditService queryAuditService) {
+        this.chatClient = chatClientBuilder.build();
+        this.jdbcTemplate = jdbcTemplate;
+        this.sqlSecurityValidator = sqlSecurityValidator;
+        this.sqlSchemaValidator = sqlSchemaValidator;
+        this.properties = properties;
+        this.databaseSchemaService = databaseSchemaService;
+        this.dataPermissionService = dataPermissionService;
+        this.queryAuditService = queryAuditService;
+    }
+
+    public QueryResult execute(String userQuery, int page, int pageSize) {
         long start = System.currentTimeMillis();
         String auditedSql = null;
         List<Object> auditedParams = List.of();
         try {
-            String sql = generateSql(userQuery);
-            sqlSecurityValidator.validate(sql);
+            int safePage = Math.max(page, 1);
+            int safePageSize = Math.max(1, Math.min(pageSize, MAX_PAGE_SIZE));
 
-            queryAuditService.logGeneratedSql(userQuery, sql);
-            auditedSql = sql;
+            QueryPlan queryPlan = resolveQueryPlan(userQuery);
+            String baseSql = queryPlan.baseSql();
+            String pagedSql = appendPagination(baseSql, safePage, safePageSize);
 
-            SqlAnalysis sqlAnalysis = analyzeSql(sql);
-            List<Map<String, Object>> rows = jdbcTemplate.queryForList(sql);
+            queryAuditService.logGeneratedSql(userQuery, pagedSql);
+            auditedSql = pagedSql;
+
+            List<Map<String, Object>> rows = jdbcTemplate.queryForList(pagedSql);
+            PageInfo pageInfo = buildPageInfo(safePage, safePageSize, queryPlan.total());
 
             long duration = System.currentTimeMillis() - start;
-            queryAuditService.logExecution(sql, List.of(), duration, rows.size(), null);
-            return QueryResult.success(sql, List.of(), sqlAnalysis, rows);
+            queryAuditService.logExecution(pagedSql, List.of(), duration, rows.size(), null);
+            return QueryResult.success(pagedSql, List.of(), queryPlan.sqlAnalysis(), rows, pageInfo);
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
             queryAuditService.logExecution(auditedSql, auditedParams, duration, 0, e);
@@ -90,13 +133,8 @@ public class NaturalLanguageQueryService {
         }
     }
 
-    private String generateSql(String userQuery) {
-        String prompt = SQL_PROMPT
-                .replace("{schema}", databaseSchemaService.buildSchemaPrompt())
-                .replace("{query}", userQuery);
-
-        String output = chatClientBuilder.build()
-                .prompt()
+    private String generateSql(String prompt) {
+        String output = chatClient.prompt()
                 .user(prompt)
                 .call()
                 .content();
@@ -109,11 +147,132 @@ public class NaturalLanguageQueryService {
             return "";
         }
         String sql = rawSql.trim();
-        sql = sql.replace("```sql", "").replace("```", "").trim();
+        Matcher codeBlockMatcher = CODE_BLOCK_PATTERN.matcher(sql);
+        if (codeBlockMatcher.find()) {
+            sql = codeBlockMatcher.group(1).trim();
+        }
+        int sqlStartIndex = indexOfSqlStart(sql);
+        if (sqlStartIndex > 0) {
+            sql = sql.substring(sqlStartIndex).trim();
+        }
         if (sql.endsWith(";")) {
             sql = sql.substring(0, sql.length() - 1).trim();
         }
         return sql;
+    }
+
+    private String buildGeneratePrompt(String userQuery, String schemaPrompt) {
+        return SQL_PROMPT
+                .replace("{schema}", schemaPrompt)
+                .replace("{query}", userQuery == null ? "" : userQuery);
+    }
+
+    private String buildRepairPrompt(String userQuery, String schemaPrompt, String previousSql, String failureReason) {
+        return SQL_REPAIR_PROMPT
+                .replace("{schema}", schemaPrompt)
+                .replace("{query}", userQuery == null ? "" : userQuery)
+                .replace("{sql}", previousSql == null || previousSql.isBlank() ? "(empty)" : previousSql)
+                .replace("{reason}", failureReason == null || failureReason.isBlank() ? "Unknown validation error" : failureReason);
+    }
+
+    private String stripTrailingLimit(String sql) {
+        if (sql == null) {
+            return "";
+        }
+        return TRAILING_LIMIT_PATTERN.matcher(sql.trim()).replaceFirst("").trim();
+    }
+
+    private String appendPagination(String sql, int page, int pageSize) {
+        long offset = (long) (page - 1) * pageSize;
+        return sql + " LIMIT " + pageSize + " OFFSET " + offset;
+    }
+
+    private QueryPlan resolveQueryPlan(String userQuery) {
+        long ttlMs = Math.max(0, properties.getQueryPlanCacheSeconds()) * 1000;
+        String cacheKey = normalizeUserQuery(userQuery);
+        long now = System.currentTimeMillis();
+
+        if (ttlMs > 0) {
+            QueryPlanCacheEntry cached = queryPlanCache.get(cacheKey);
+            if (cached != null && now < cached.expiresAtMs()) {
+                return cached.queryPlan();
+            }
+        }
+
+        String schemaPrompt = databaseSchemaService.buildSchemaPrompt();
+        Map<String, TableMetadata> metadataMap = databaseSchemaService.getTableMetadataMap();
+        QueryPlan freshPlan = generateValidatedQueryPlan(userQuery, schemaPrompt, metadataMap);
+
+        if (ttlMs > 0) {
+            queryPlanCache.put(cacheKey, new QueryPlanCacheEntry(freshPlan, now + ttlMs));
+        }
+        return freshPlan;
+    }
+
+    private QueryPlan generateValidatedQueryPlan(String userQuery,
+                                                 String schemaPrompt,
+                                                 Map<String, TableMetadata> metadataMap) {
+        int maxAttempts = Math.max(1, properties.getSqlGenerationMaxAttempts());
+        String previousSql = "";
+        String failureReason = "";
+
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            String prompt = attempt == 1
+                    ? buildGeneratePrompt(userQuery, schemaPrompt)
+                    : buildRepairPrompt(userQuery, schemaPrompt, previousSql, failureReason);
+
+            String generatedSql = generateSql(prompt);
+            String securedSql = dataPermissionService.apply(generatedSql);
+            String baseSql = stripTrailingLimit(securedSql);
+
+            try {
+                sqlSecurityValidator.validate(baseSql);
+                sqlSchemaValidator.validate(baseSql, metadataMap);
+                return new QueryPlan(baseSql, analyzeSql(baseSql), queryTotal(baseSql));
+            } catch (Exception e) {
+                previousSql = baseSql;
+                failureReason = extractFailureReason(e);
+                log.warn("SQL generation attempt {} failed, query={}, sql={}, reason={}",
+                        attempt, userQuery, baseSql, failureReason);
+            }
+        }
+
+        throw new IllegalStateException("AI failed to generate a valid SQL after retries: " + failureReason);
+    }
+
+    private String normalizeUserQuery(String userQuery) {
+        return userQuery == null ? "" : userQuery.trim();
+    }
+
+    private long queryTotal(String sql) {
+        String countSql = "SELECT COUNT(*) FROM (" + sql + ") AS total_rows";
+        Long total = jdbcTemplate.queryForObject(countSql, Long.class);
+        return total == null ? 0L : total;
+    }
+
+    private PageInfo buildPageInfo(int page, int pageSize, long total) {
+        long totalPages = total == 0 ? 0 : (long) Math.ceil((double) total / pageSize);
+        return new PageInfo(
+                page,
+                pageSize,
+                total,
+                totalPages,
+                page > 1,
+                totalPages > 0 && page < totalPages
+        );
+    }
+
+    private int indexOfSqlStart(String sql) {
+        String lowerSql = sql.toLowerCase(Locale.ROOT);
+        int selectIndex = lowerSql.indexOf("select");
+        int withIndex = lowerSql.indexOf("with");
+        if (selectIndex < 0) {
+            return withIndex;
+        }
+        if (withIndex < 0) {
+            return selectIndex;
+        }
+        return Math.min(selectIndex, withIndex);
     }
 
     private SqlAnalysis analyzeSql(String sql) {
@@ -124,39 +283,39 @@ public class NaturalLanguageQueryService {
 
         if (lowerSql.contains("select *")) {
             score -= 20;
-            risks.add("使用 SELECT *，可能带来不必要的 IO 和网络开销。");
-            suggestions.add("改为显式选择必要字段，降低查询成本。");
+            risks.add("SELECT * may introduce unnecessary IO and network cost.");
+            suggestions.add("Select only the required columns.");
         }
 
         if (!lowerSql.contains("where")) {
             score -= 20;
-            risks.add("缺少 WHERE 条件，存在全表扫描风险。");
-            suggestions.add("补充过滤条件并优先使用索引字段。");
+            risks.add("Missing WHERE clause may trigger a full table scan.");
+            suggestions.add("Add filters and prefer indexed columns.");
         }
 
         if (!lowerSql.contains("limit")) {
             score -= 10;
-            risks.add("缺少 LIMIT，结果集可能过大。");
-            suggestions.add("添加 LIMIT 或分页条件，避免单次返回过多数据。");
+            risks.add("The base SQL has no LIMIT and relies on service-side pagination.");
+            suggestions.add("Keep pagination at the service layer for stable behavior.");
         }
 
         int joinCount = countMatches(JOIN_PATTERN, lowerSql);
         if (joinCount >= 4) {
             score -= 12;
-            risks.add("JOIN 数量较多，执行计划可能复杂。");
-            suggestions.add("确认 JOIN 字段有索引，并检查执行计划。");
+            risks.add("Many JOINs may produce a complex execution plan.");
+            suggestions.add("Ensure JOIN columns are indexed and review EXPLAIN output.");
         }
 
         if (lowerSql.contains("order by") && !lowerSql.contains("limit")) {
             score -= 8;
-            risks.add("ORDER BY 未配合 LIMIT，排序代价可能较高。");
-            suggestions.add("若只需要前 N 条数据，建议 ORDER BY + LIMIT 组合。");
+            risks.add("ORDER BY without LIMIT may be expensive.");
+            suggestions.add("Ensure sort columns are indexed and watch large-page scans.");
         }
 
         if (lowerSql.contains("not in")) {
             score -= 8;
-            risks.add("NOT IN 在大数据量下可能性能较差。");
-            suggestions.add("可评估改写为 NOT EXISTS 或 LEFT JOIN + IS NULL。");
+            risks.add("NOT IN may perform poorly on large datasets.");
+            suggestions.add("Consider NOT EXISTS or LEFT JOIN + IS NULL.");
         }
 
         score = Math.max(0, Math.min(score, 100));
@@ -172,10 +331,10 @@ public class NaturalLanguageQueryService {
         }
 
         if (risks.isEmpty()) {
-            risks.add("未发现明显风险。");
+            risks.add("No obvious risk detected.");
         }
         if (suggestions.isEmpty()) {
-            suggestions.add("SQL 结构较稳健，可结合 EXPLAIN 继续验证执行计划。");
+            suggestions.add("The SQL looks stable; validate it further with EXPLAIN.");
         }
 
         return new SqlAnalysis(score, level, risks, suggestions);
@@ -188,5 +347,20 @@ public class NaturalLanguageQueryService {
             count++;
         }
         return count;
+    }
+
+    private String extractFailureReason(Exception exception) {
+        Throwable cursor = exception;
+        while (cursor.getCause() != null) {
+            cursor = cursor.getCause();
+        }
+        String message = cursor.getMessage();
+        return (message == null || message.isBlank()) ? exception.getClass().getSimpleName() : message;
+    }
+
+    private record QueryPlan(String baseSql, SqlAnalysis sqlAnalysis, long total) {
+    }
+
+    private record QueryPlanCacheEntry(QueryPlan queryPlan, long expiresAtMs) {
     }
 }

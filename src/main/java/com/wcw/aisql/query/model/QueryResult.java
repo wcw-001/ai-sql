@@ -9,13 +9,18 @@ public record QueryResult(
         String sql,
         List<Object> parameters,
         SqlAnalysis sqlAnalysis,
-        List<Map<String, Object>> data
+        List<Map<String, Object>> data,
+        PageInfo pageInfo
 ) {
-    public static QueryResult success(String sql, List<Object> parameters, SqlAnalysis sqlAnalysis, List<Map<String, Object>> data) {
-        return new QueryResult(true, "OK", sql, parameters, sqlAnalysis, data);
+    public static QueryResult success(String sql,
+                                      List<Object> parameters,
+                                      SqlAnalysis sqlAnalysis,
+                                      List<Map<String, Object>> data,
+                                      PageInfo pageInfo) {
+        return new QueryResult(true, "OK", sql, parameters, sqlAnalysis, data, pageInfo);
     }
 
     public static QueryResult error(String message) {
-        return new QueryResult(false, message, null, List.of(), null, List.of());
+        return new QueryResult(false, message, null, List.of(), null, List.of(), null);
     }
 }

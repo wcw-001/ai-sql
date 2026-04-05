@@ -17,6 +17,16 @@ public class AiQueryProperties {
      */
     private long schemaCacheSeconds = 300;
 
+    /**
+     * Natural-language query plan cache ttl in seconds.
+     */
+    private long queryPlanCacheSeconds = 60;
+
+    /**
+     * Maximum attempts for AI SQL generation and repair.
+     */
+    private int sqlGenerationMaxAttempts = 3;
+
     public long getSlowQueryThresholdMs() {
         return slowQueryThresholdMs;
     }
@@ -31,5 +41,21 @@ public class AiQueryProperties {
 
     public void setSchemaCacheSeconds(long schemaCacheSeconds) {
         this.schemaCacheSeconds = schemaCacheSeconds;
+    }
+
+    public long getQueryPlanCacheSeconds() {
+        return queryPlanCacheSeconds;
+    }
+
+    public void setQueryPlanCacheSeconds(long queryPlanCacheSeconds) {
+        this.queryPlanCacheSeconds = queryPlanCacheSeconds;
+    }
+
+    public int getSqlGenerationMaxAttempts() {
+        return sqlGenerationMaxAttempts;
+    }
+
+    public void setSqlGenerationMaxAttempts(int sqlGenerationMaxAttempts) {
+        this.sqlGenerationMaxAttempts = sqlGenerationMaxAttempts;
     }
 }

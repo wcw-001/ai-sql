@@ -2,13 +2,13 @@ spring:
   application:
     name: aisql
   datasource:
-    url: jdbc:mysql://localhost:3306/pxiot_dev?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&tinyInt1isBit=false
-    username: root
-    password: 123456
+    url: jdbc:mysql://rm-wz9gd5cb4kvx431y0to.mysql.rds.aliyuncs.com:3306/jxz-purchaser?useUnicode=true&characterEncoding=utf-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&tinyInt1isBit=false
+    username: bg_jxz
+    password: BGJXZ!@#123qwe
     driver-class-name: com.mysql.cj.jdbc.Driver
   ai:
     deepseek:
-      api-key: sk-2273f0c6373a45528107336b3437a3b7
+      api-key: sk-50484b2845b846eba30fdf3124cb1880
       base-url: https://api.deepseek.com
       chat:
         options:
@@ -17,6 +17,8 @@ ai:
   query:
     slow-query-threshold-ms: 1000
     schema-cache-seconds: 300
+    query-plan-cache-seconds: 60
+    sql-generation-max-attempts: 3
 
 server:
 #  address: 0.0.0.0
