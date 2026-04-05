@@ -1,0 +1,19 @@
+{
+  "name": "ai-sql-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build:dist": "vite build",
+    "build": "vite build && node scripts/sync-to-static.mjs",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^6.2.2"
+  }
+}
