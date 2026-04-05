@@ -45,6 +45,7 @@ public class NaturalLanguageQueryService {
             6. Add necessary filtering conditions when the request clearly implies them.
             7. Do not add LIMIT or OFFSET. Pagination is appended by the service.
             8. Prefer the simplest correct query. If a field is uncertain, do not use it.
+            9. Use column comments, types, nullability, and primary-key hints to infer field meaning correctly.
 
             Database schema:
             {schema}
@@ -62,6 +63,7 @@ public class NaturalLanguageQueryService {
             3. Use only tables, columns, and relations from the schema.
             4. Do not use LIMIT or OFFSET.
             5. Fix every issue described in the failure reason.
+            6. Re-evaluate column meaning from column comments, types, nullability, and primary-key hints.
 
             Database schema:
             {schema}

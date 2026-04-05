@@ -1,6 +1,7 @@
 package com.wcw.aisql.query.service;
 
 import com.wcw.aisql.query.config.AiQueryProperties;
+import com.wcw.aisql.query.model.ColumnMetadata;
 import com.wcw.aisql.query.model.TableMetadata;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,11 +13,11 @@ import java.sql.DatabaseMetaData;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.TreeMap;
-import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicReference;
 
 @Slf4j
@@ -96,11 +97,8 @@ public class DatabaseSchemaService {
                                          Map<String, MutableTableMetadata> tablesByKey,
                                          List<String> relations) throws Exception {
         for (MutableTableMetadata table : tablesByKey.values()) {
-            try (ResultSet columns = metaData.getColumns(catalog, null, table.actualTableName, "%")) {
-                while (columns.next()) {
-                    table.columns.add(columns.getString("COLUMN_NAME").toLowerCase(Locale.ROOT));
-                }
-            }
+            loadPrimaryKeys(metaData, catalog, table);
+            loadColumns(metaData, catalog, table);
 
             try (ResultSet importedKeys = metaData.getImportedKeys(catalog, null, table.actualTableName)) {
                 while (importedKeys.next()) {
@@ -115,6 +113,71 @@ public class DatabaseSchemaService {
         }
     }
 
+    private void loadPrimaryKeys(DatabaseMetaData metaData, String catalog, MutableTableMetadata table) throws Exception {
+        try (ResultSet primaryKeys = metaData.getPrimaryKeys(catalog, null, table.actualTableName)) {
+            while (primaryKeys.next()) {
+                String columnName = primaryKeys.getString("COLUMN_NAME");
+                if (columnName != null) {
+                    table.primaryKeys.add(columnName.toLowerCase(Locale.ROOT));
+                }
+            }
+        }
+    }
+
+    private void loadColumns(DatabaseMetaData metaData, String catalog, MutableTableMetadata table) throws Exception {
+        try (ResultSet columns = metaData.getColumns(catalog, null, table.actualTableName, "%")) {
+            while (columns.next()) {
+                String columnName = columns.getString("COLUMN_NAME");
+                if (columnName == null) {
+                    continue;
+                }
+
+                String normalizedColumnName = columnName.toLowerCase(Locale.ROOT);
+                table.columns.add(normalizedColumnName);
+                table.columnDetails.put(normalizedColumnName, new ColumnMetadata(
+                        normalizedColumnName,
+                        buildColumnType(columns),
+                        columns.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls,
+                        table.primaryKeys.contains(normalizedColumnName),
+                        normalizeComment(columns.getString("REMARKS"))
+                ));
+            }
+        }
+    }
+
+    private String buildColumnType(ResultSet columns) throws Exception {
+        String typeName = columns.getString("TYPE_NAME");
+        if (typeName == null || typeName.isBlank()) {
+            return null;
+        }
+
+        int columnSize = columns.getInt("COLUMN_SIZE");
+        int decimalDigits = columns.getInt("DECIMAL_DIGITS");
+        if (columns.wasNull() || columnSize <= 0) {
+            return typeName;
+        }
+
+        String upperType = typeName.toUpperCase(Locale.ROOT);
+        if (supportsScale(upperType)) {
+            return "%s(%d,%d)".formatted(typeName, columnSize, Math.max(decimalDigits, 0));
+        }
+        if (supportsLength(upperType)) {
+            return "%s(%d)".formatted(typeName, columnSize);
+        }
+        return typeName;
+    }
+
+    private boolean supportsLength(String typeName) {
+        return typeName.contains("CHAR")
+                || typeName.contains("BINARY")
+                || typeName.contains("BIT")
+                || typeName.contains("VARBINARY");
+    }
+
+    private boolean supportsScale(String typeName) {
+        return typeName.contains("DECIMAL") || typeName.contains("NUMERIC");
+    }
+
     private SchemaSnapshot buildSnapshot(Map<String, MutableTableMetadata> tablesByKey, List<String> relations) {
         Map<String, TableMetadata> metadataMap = new LinkedHashMap<>();
         StringBuilder promptBuilder = new StringBuilder("Database schema:\n");
@@ -122,7 +185,12 @@ public class DatabaseSchemaService {
         for (Map.Entry<String, MutableTableMetadata> entry : tablesByKey.entrySet()) {
             String normalizedKey = entry.getKey();
             MutableTableMetadata table = entry.getValue();
-            TableMetadata metadata = new TableMetadata(table.actualTableName, table.columns, table.comment);
+            TableMetadata metadata = new TableMetadata(
+                    table.actualTableName,
+                    table.columns,
+                    table.comment,
+                    table.columnDetails
+            );
             metadataMap.put(normalizedKey, metadata);
 
             promptBuilder.append("Table: ").append(metadata.tableName());
@@ -131,8 +199,8 @@ public class DatabaseSchemaService {
             }
             promptBuilder.append('\n');
             promptBuilder.append("  Columns:\n");
-            for (String column : metadata.columns()) {
-                promptBuilder.append("  - ").append(column).append('\n');
+            for (ColumnMetadata columnMetadata : metadata.columnDetails().values()) {
+                promptBuilder.append("  - ").append(columnMetadata.promptFragment()).append('\n');
             }
             promptBuilder.append('\n');
         }
@@ -163,7 +231,9 @@ public class DatabaseSchemaService {
 
         private final String actualTableName;
         private final String comment;
-        private final TreeSet<String> columns = new TreeSet<>();
+        private final LinkedHashSet<String> columns = new LinkedHashSet<>();
+        private final LinkedHashSet<String> primaryKeys = new LinkedHashSet<>();
+        private final LinkedHashMap<String, ColumnMetadata> columnDetails = new LinkedHashMap<>();
 
         private MutableTableMetadata(String actualTableName, String comment) {
             this.actualTableName = actualTableName;
